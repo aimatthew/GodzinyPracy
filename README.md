@@ -16,16 +16,3 @@ Natywna aplikacja Android do ręcznej ewidencji czasu pracy. Kalendarz jest ekra
 - lokalny zapis na telefonie bez konta i internetu,
 - profesjonalny ciemny motyw.
 
-## Uruchomienie
-
-Otwórz folder w Android Studio i uruchom konfigurację `app` na emulatorze lub telefonie z Androidem 8.0 lub nowszym.
-
-Z wiersza poleceń:
-
-```powershell
-.\gradlew.bat assembleDebug
-```
-
-## Publikacja i aktualizacje
-
-Konfigurację repozytorium oraz tworzenia wydań opisuje plik [GITHUB_UPDATES.md](GITHUB_UPDATES.md).
