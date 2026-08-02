@@ -14,12 +14,24 @@ android {
         applicationId = "pl.godzinypracy.workly"
         minSdk = 26
         targetSdk = 36
-        versionCode = 2
-        versionName = "1.0.1"
+        versionCode = System.getenv("GODZINY_PRACY_VERSION_CODE")?.toIntOrNull() ?: 2
+        versionName = System.getenv("GODZINY_PRACY_VERSION_NAME") ?: "1.0.1"
         buildConfigField("String", "GITHUB_REPOSITORY", "\"$githubRepository\"")
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true
+    }
+
+    val releaseKeystorePath = System.getenv("SIGNING_KEYSTORE_PATH")
+    signingConfigs {
+        if (!releaseKeystorePath.isNullOrBlank()) {
+            create("release") {
+                storeFile = file(releaseKeystorePath)
+                storePassword = System.getenv("SIGNING_KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("SIGNING_KEY_ALIAS")
+                keyPassword = System.getenv("SIGNING_KEY_PASSWORD")
+            }
+        }
     }
 
     buildTypes {
@@ -29,6 +41,9 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            signingConfigs.findByName("release")?.let {
+                signingConfig = it
+            }
         }
     }
 
