@@ -39,11 +39,13 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
@@ -53,6 +55,9 @@ import pl.godzinypracy.workly.data.formatHourlyRateInput
 import pl.godzinypracy.workly.data.formatMinutes
 import pl.godzinypracy.workly.data.parseHourlyRateCents
 import pl.godzinypracy.workly.sync.GoogleDriveSyncState
+import kotlinx.coroutines.launch
+import pl.godzinypracy.workly.update.AppUpdateChecker
+import pl.godzinypracy.workly.update.ManualUpdateCheckResult
 
 @OptIn(ExperimentalComposeUiApi::class)
 @Composable
@@ -80,6 +85,20 @@ fun SettingsScreen(
     var hourlyRateError by remember { mutableStateOf(false) }
     val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
+    val updateCheckScope = rememberCoroutineScope()
+    val uriHandler = LocalUriHandler.current
+    var manualUpdateResult by remember { mutableStateOf<ManualUpdateCheckResult?>(null) }
+    var isCheckingForUpdate by remember { mutableStateOf(false) }
+
+    fun checkUpdatesNow() {
+        if (isCheckingForUpdate) return
+        isCheckingForUpdate = true
+        manualUpdateResult = null
+        updateCheckScope.launch {
+            manualUpdateResult = AppUpdateChecker.checkNow()
+            isCheckingForUpdate = false
+        }
+    }
 
     fun saveHourlyRate() {
         val parsedRate = parseHourlyRateCents(hourlyRateText)
@@ -222,8 +241,9 @@ fun SettingsScreen(
 
         Spacer(Modifier.height(14.dp))
         Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow)) {
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(18.dp),
+            Column(Modifier.fillMaxWidth().padding(18.dp)) {
+                Row(
+                modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
@@ -249,6 +269,66 @@ fun SettingsScreen(
                     onCheckedChange = onAutomaticUpdatesChange,
                     enabled = BuildConfig.GITHUB_REPOSITORY.isNotBlank()
                 )
+            }
+                Spacer(Modifier.height(14.dp))
+                OutlinedButton(
+                    onClick = { checkUpdatesNow() },
+                    enabled = BuildConfig.GITHUB_REPOSITORY.isNotBlank() && !isCheckingForUpdate,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        if (isCheckingForUpdate) {
+                            "Sprawdzanie..."
+                        } else {
+                            "Sprawd\u017a aktualizacje teraz"
+                        }
+                    )
+                }
+
+                manualUpdateResult?.let { result ->
+                    Spacer(Modifier.height(10.dp))
+                    when (result) {
+                        is ManualUpdateCheckResult.UpdateAvailable -> {
+                            Column {
+                                Text(
+                                    "Dost\u0119pna aktualizacja: ${result.release.displayName}.",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.primary,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                                TextButton(
+                                    onClick = { uriHandler.openUri(result.release.pageUrl) }
+                                ) {
+                                    Text("Otw\u00f3rz wydanie")
+                                }
+                            }
+                        }
+
+                        ManualUpdateCheckResult.UpToDate -> Text(
+                            "Masz najnowsz\u0105 wersj\u0119 (${BuildConfig.VERSION_NAME}).",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+
+                        ManualUpdateCheckResult.NoPublishedRelease -> Text(
+                            "Na GitHub nie ma jeszcze opublikowanego wydania.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+
+                        ManualUpdateCheckResult.RepositoryNotConfigured -> Text(
+                            "Repozytorium aktualizacji nie jest skonfigurowane.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error
+                        )
+
+                        ManualUpdateCheckResult.Failed -> Text(
+                            "Nie uda\u0142o si\u0119 sprawdzi\u0107 aktualizacji. Sprawd\u017a po\u0142\u0105czenie z internetem.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                    }
+                }
             }
         }
 

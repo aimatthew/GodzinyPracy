@@ -14,8 +14,8 @@ android {
         applicationId = "pl.godzinypracy.workly"
         minSdk = 26
         targetSdk = 36
-        versionCode = System.getenv("GODZINY_PRACY_VERSION_CODE")?.toIntOrNull() ?: 2
-        versionName = System.getenv("GODZINY_PRACY_VERSION_NAME") ?: "1.0.1"
+        versionCode = System.getenv("GODZINY_PRACY_VERSION_CODE")?.toIntOrNull() ?: 3
+        versionName = System.getenv("GODZINY_PRACY_VERSION_NAME") ?: "1.0.2"
         buildConfigField("String", "GITHUB_REPOSITORY", "\"$githubRepository\"")
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
