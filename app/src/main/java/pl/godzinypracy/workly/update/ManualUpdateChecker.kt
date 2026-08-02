@@ -54,12 +54,7 @@ object AppUpdateChecker {
                 HttpURLConnection.HTTP_OK -> {
                     val payload = connection.inputStream.bufferedReader().use { it.readText() }
                     val json = JSONObject(payload)
-                    val tagName = json.getString("tag_name")
-                    GitHubRelease(
-                        tagName = tagName,
-                        displayName = json.optString("name").takeIf { it.isNotBlank() } ?: tagName,
-                        pageUrl = json.getString("html_url")
-                    )
+                    parseGitHubRelease(json)
                 }
 
                 HttpURLConnection.HTTP_NOT_FOUND -> null

@@ -1,7 +1,6 @@
 package pl.godzinypracy.workly.ui
 
 import android.Manifest
-import android.app.TimePickerDialog
 import android.content.pm.PackageManager
 import android.os.Build
 import android.app.Activity
@@ -11,6 +10,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -26,15 +26,18 @@ import androidx.compose.material.icons.automirrored.outlined.ListAlt
 import androidx.compose.material.icons.outlined.BarChart
 import androidx.compose.material.icons.outlined.CalendarMonth
 import androidx.compose.material.icons.outlined.DeleteOutline
-import androidx.compose.material.icons.outlined.Schedule
+import androidx.compose.material.icons.outlined.ArrowForward
+import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.ExpandLess
+import androidx.compose.material.icons.outlined.ExpandMore
+import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.AssistChip
+import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilterChip
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.NavigationBar
@@ -44,8 +47,12 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.Surface
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.TimePicker
+import androidx.compose.material3.rememberTimePickerState
 import androidx.compose.runtime.Composable
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -55,6 +62,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -88,6 +96,11 @@ private enum class GoogleDriveAction {
     CONNECT,
     RESTORE,
     DISCONNECT
+}
+
+private enum class TimePickerTarget {
+    START,
+    END
 }
 
 @Composable
@@ -268,14 +281,17 @@ fun WorklyApp(viewModel: WorkViewModel) {
     }
 
     editorDate?.let { date ->
+        val previousWorkEntry = uiState.entries.values
+            .asSequence()
+            .filter { it.type == WorkDayType.WORK && it.date < date }
+            .maxByOrNull { it.date }
         EntryEditorSheet(
             date = date,
             existingEntry = uiState.entries[date],
-            suggestedStartMinutes = uiState.entries.values
-                .asSequence()
-                .filter { it.type == WorkDayType.WORK && it.date < date }
-                .maxByOrNull { it.date }
-                ?.startMinutes ?: 8 * 60,
+            suggestedStartMinutes = previousWorkEntry?.startMinutes ?: 8 * 60,
+            suggestedEndMinutes = previousWorkEntry?.endMinutes ?: 16 * 60,
+            frequentStartMinutes = mostFrequentWorkTimes(uiState.entries.values, WorkEntry::startMinutes),
+            frequentEndMinutes = mostFrequentWorkTimes(uiState.entries.values, WorkEntry::endMinutes),
             defaultHourlyRateCents = uiState.hourlyRateCents,
             onDismiss = { editorDate = null },
             onSave = {
@@ -296,6 +312,9 @@ private fun EntryEditorSheet(
     date: LocalDate,
     existingEntry: WorkEntry?,
     suggestedStartMinutes: Int,
+    suggestedEndMinutes: Int,
+    frequentStartMinutes: List<Int>,
+    frequentEndMinutes: List<Int>,
     defaultHourlyRateCents: Int,
     onDismiss: () -> Unit,
     onSave: (WorkEntry) -> Unit,
@@ -304,12 +323,19 @@ private fun EntryEditorSheet(
     var startMinutes by remember(date, existingEntry, suggestedStartMinutes) {
         mutableIntStateOf(existingEntry?.startMinutes ?: suggestedStartMinutes)
     }
-    var endMinutes by remember(date, existingEntry) { mutableIntStateOf(existingEntry?.endMinutes ?: 16 * 60) }
+    var endMinutes by remember(date, existingEntry, suggestedEndMinutes) {
+        mutableIntStateOf(existingEntry?.endMinutes ?: suggestedEndMinutes)
+    }
     var breakMinutes by remember(date, existingEntry) { mutableIntStateOf(existingEntry?.breakMinutes ?: 0) }
     var type by remember(date, existingEntry) { mutableStateOf(existingEntry?.type ?: WorkDayType.WORK) }
     var note by remember(date, existingEntry) { mutableStateOf(existingEntry?.note.orEmpty()) }
     var confirmDelete by remember { mutableStateOf(false) }
-    val context = LocalContext.current
+    var timePickerTarget by remember { mutableStateOf<TimePickerTarget?>(null) }
+    var showOptionalFields by remember(date, existingEntry) {
+        mutableStateOf(existingEntry?.hourlyRateOverrideCents != null || !existingEntry?.note.isNullOrBlank())
+    }
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+
     var customRateText by remember(date, existingEntry) {
         mutableStateOf(existingEntry?.hourlyRateOverrideCents?.let(::formatHourlyRateInput).orEmpty())
     }
@@ -327,80 +353,116 @@ private fun EntryEditorSheet(
         note = note.trim()
     )
 
-    fun showTimePicker(currentMinutes: Int, onSelected: (Int) -> Unit) {
-        TimePickerDialog(
-            context,
-            { _, hour, minute -> onSelected(hour * 60 + minute) },
-            currentMinutes / 60,
-            currentMinutes % 60,
-            true
-        ).show()
-    }
-
-    ModalBottomSheet(onDismissRequest = onDismiss) {
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState
+    ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .verticalScroll(rememberScrollState())
                 .imePadding()
                 .navigationBarsPadding()
-                .padding(horizontal = 20.dp, vertical = 8.dp)
         ) {
-            Text(
-                text = date.formatPolishDate(),
-                style = MaterialTheme.typography.headlineSmall,
-                fontWeight = FontWeight.SemiBold
-            )
-            Text(
-                text = if (existingEntry == null) "Dodaj wpis do kalendarza" else "Edytuj zapisane godziny",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-
-            Spacer(Modifier.height(18.dp))
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                WorkDayType.entries.chunked(2).forEach { options ->
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        options.forEach { option ->
-                            FilterChip(
-                                selected = type == option,
-                                onClick = { type = option },
-                                modifier = Modifier.weight(1f),
-                                label = {
-                                    Text(
-                                        text = option.label,
-                                        modifier = Modifier.fillMaxWidth(),
-                                        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                                        maxLines = 1
-                                    )
-                                }
-                            )
-                        }
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f, fill = false)
+                    .verticalScroll(rememberScrollState())
+                .padding(horizontal = 20.dp, vertical = 8.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.Top
+                ) {
+                    Column {
+                        Text(
+                            text = date.formatPolishDate(),
+                            style = MaterialTheme.typography.headlineSmall,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Text(
+                            text = if (existingEntry == null) "Nowy wpis" else "Edytuj wpis",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    IconButton(onClick = onDismiss) {
+                        Icon(Icons.Outlined.Close, contentDescription = "Zamknij")
                     }
                 }
 
+            Spacer(Modifier.height(18.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                WorkDayType.entries.forEach { option ->
+                    DayTypeButton(
+                        selected = type == option,
+                        onClick = { type = option },
+                        label = when (option) {
+                            WorkDayType.WORK -> "Praca"
+                            WorkDayType.VACATION -> "Urlop"
+                            WorkDayType.SICK_LEAVE -> "L4"
+                            WorkDayType.DAY_OFF -> "Wolne"
+                        },
+                        modifier = Modifier.weight(1f)
+                    )
+                }
             }
             if (type == WorkDayType.WORK) {
                 Spacer(Modifier.height(18.dp))
-                Row(
+                Surface(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    shape = MaterialTheme.shapes.extraLarge,
+                    color = MaterialTheme.colorScheme.surfaceContainerLow
                 ) {
-                    TimeButton(
-                        modifier = Modifier.weight(1f),
-                        label = "Od",
-                        minutes = startMinutes,
-                        onClick = { showTimePicker(startMinutes) { startMinutes = it } }
-                    )
-                    TimeButton(
-                        modifier = Modifier.weight(1f),
-                        label = "Do",
-                        minutes = endMinutes,
-                        onClick = { showTimePicker(endMinutes) { endMinutes = it } }
-                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        TimeButton(
+                            modifier = Modifier.weight(1f),
+                            label = "Od",
+                            minutes = startMinutes,
+                            onClick = { timePickerTarget = TimePickerTarget.START }
+                        )
+                        Icon(
+                            Icons.Outlined.ArrowForward,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        TimeButton(
+                            modifier = Modifier.weight(1f),
+                            label = "Do",
+                            minutes = endMinutes,
+                            onClick = { timePickerTarget = TimePickerTarget.END }
+                        )
+                    }
+                }
+
+                if (
+                    existingEntry == null &&
+                    startMinutes == suggestedStartMinutes &&
+                    endMinutes == suggestedEndMinutes
+                ) {
+                    Row(
+                        modifier = Modifier.padding(top = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Icon(
+                            Icons.Outlined.History,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Text(
+                            text = "Godziny ${formatClock(suggestedStartMinutes)}\u2013${formatClock(suggestedEndMinutes)} zapami\u0119tane z poprzedniego dnia",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                 }
 
                 if (draft.endsNextDay) {
@@ -414,28 +476,31 @@ private fun EntryEditorSheet(
 
                 Spacer(Modifier.height(16.dp))
                 Text("Przerwa", style = MaterialTheme.typography.labelLarge)
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    listOf(listOf(0, 15, 30), listOf(45, 60)).forEach { rowValues ->
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            rowValues.forEach { value ->
-                                AssistChip(
-                                    onClick = { breakMinutes = value },
-                                    label = { Text(if (value == 0) "Brak" else "$value min") },
-                                    leadingIcon = if (breakMinutes == value) {
-                                        { Icon(Icons.Outlined.Schedule, contentDescription = null) }
-                                    } else null
-                                )
-                            }
-                        }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    listOf(0, 15, 30, 45, 60).forEach { value ->
+                        BreakOptionButton(
+                            selected = breakMinutes == value,
+                            onClick = { breakMinutes = value },
+                            label = if (value == 0) "Brak" else "$value",
+                            modifier = Modifier.weight(1f)
+                        )
                     }
                 }
 
                 Spacer(Modifier.height(14.dp))
-                HorizontalDivider()
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(vertical = 14.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = MaterialTheme.shapes.large,
+                    color = MaterialTheme.colorScheme.primaryContainer
                 ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(14.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column {
                     Text("Łącznie", style = MaterialTheme.typography.titleMedium)
                     Text(
                         formatMinutes(draft.workedMinutes),
@@ -443,7 +508,27 @@ private fun EntryEditorSheet(
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.primary
                     )
+                        }
+                        Column(horizontalAlignment = Alignment.End) {
+                            Text("Zarobek", style = MaterialTheme.typography.labelMedium)
+                            Text(
+                                if (effectiveHourlyRateCents > 0) {
+                                    formatMoney(calculateEarningsCents(draft.workedMinutes, effectiveHourlyRateCents))
+                                } else {
+                                    "\u2014"
+                                },
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
                 }
+                }
+                OptionalFieldsToggle(
+                    expanded = showOptionalFields,
+                    onToggle = { showOptionalFields = !showOptionalFields }
+                )
+                if (showOptionalFields) {
 
                 OutlinedTextField(
                     value = customRateText,
@@ -482,7 +567,16 @@ private fun EntryEditorSheet(
                         )
                     }
                 }
+                }
             }
+            if (type != WorkDayType.WORK) {
+                OptionalFieldsToggle(
+                    expanded = showOptionalFields,
+                    onToggle = { showOptionalFields = !showOptionalFields }
+                )
+            }
+            if (showOptionalFields) {
+
 
             OutlinedTextField(
                 value = note,
@@ -492,14 +586,8 @@ private fun EntryEditorSheet(
                 minLines = 2,
                 maxLines = 4
             )
-
-            Spacer(Modifier.height(18.dp))
-            Button(
-                onClick = { onSave(draft) },
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Text(if (existingEntry == null) "Dodaj do kalendarza" else "Zapisz zmiany")
             }
+
 
             if (existingEntry != null) {
                 TextButton(
@@ -512,6 +600,30 @@ private fun EntryEditorSheet(
             }
             Spacer(Modifier.height(12.dp))
         }
+            Surface(
+                tonalElevation = 3.dp
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(12.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    OutlinedButton(
+                        onClick = onDismiss,
+                        modifier = Modifier.weight(1f),
+                        contentPadding = PaddingValues(vertical = 12.dp)
+                    ) {
+                        Text("Anuluj")
+                    }
+                    Button(
+                        onClick = { onSave(draft) },
+                        modifier = Modifier.weight(2f),
+                        contentPadding = PaddingValues(vertical = 12.dp)
+                    ) {
+                        Text(if (existingEntry == null) "Dodaj" else "Zapisz")
+                    }
+                }
+            }
+    }
     }
 
     if (confirmDelete) {
@@ -527,6 +639,155 @@ private fun EntryEditorSheet(
             }
         )
     }
+
+    timePickerTarget?.let { target ->
+        val initialMinutes = when (target) {
+            TimePickerTarget.START -> startMinutes
+            TimePickerTarget.END -> endMinutes
+        }
+        WorklyTimePickerDialog(
+            title = when (target) {
+                TimePickerTarget.START -> "Godzina rozpocz\u0119cia"
+                TimePickerTarget.END -> "Godzina zako\u0144czenia"
+            },
+            initialMinutes = initialMinutes,
+            frequentMinutes = when (target) {
+                TimePickerTarget.START -> frequentStartMinutes
+                TimePickerTarget.END -> frequentEndMinutes
+            },
+            onDismiss = { timePickerTarget = null },
+            onConfirm = { selectedMinutes ->
+                when (target) {
+                    TimePickerTarget.START -> startMinutes = selectedMinutes
+                    TimePickerTarget.END -> endMinutes = selectedMinutes
+                }
+                timePickerTarget = null
+            }
+        )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun WorklyTimePickerDialog(
+    title: String,
+    initialMinutes: Int,
+    frequentMinutes: List<Int>,
+    onDismiss: () -> Unit,
+    onConfirm: (Int) -> Unit
+) {
+    val timePickerState = rememberTimePickerState(
+        initialHour = initialMinutes / 60,
+        initialMinute = initialMinutes % 60,
+        is24Hour = true
+    )
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.SemiBold
+            )
+        },
+        text = {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                TimePicker(state = timePickerState)
+                if (frequentMinutes.isNotEmpty()) {
+                    Spacer(Modifier.height(16.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Icon(
+                            Icons.Outlined.History,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                        Text(
+                            text = "Najcz\u0119\u015bciej u\u017cywane",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.Center
+                    ) {
+                        frequentMinutes.forEach { minutes ->
+                            FrequentTimeButton(
+                                selected = timePickerState.hour == minutes / 60 &&
+                                    timePickerState.minute == minutes % 60,
+                                label = formatClock(minutes),
+                                onClick = {
+                                    timePickerState.hour = minutes / 60
+                                    timePickerState.minute = minutes % 60
+                                },
+                                modifier = Modifier.padding(horizontal = 3.dp)
+                            )
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    onConfirm(timePickerState.hour * 60 + timePickerState.minute)
+                }
+            ) {
+                Text("Ustaw")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Anuluj")
+            }
+        }
+    )
+}
+
+private fun mostFrequentWorkTimes(
+    entries: Collection<WorkEntry>,
+    timeSelector: (WorkEntry) -> Int
+): List<Int> = entries
+    .filter { it.type == WorkDayType.WORK }
+    .groupBy(timeSelector)
+    .entries
+    .sortedWith(
+        compareByDescending<Map.Entry<Int, List<WorkEntry>>> { it.value.size }
+            .thenByDescending { group -> group.value.maxOf { it.date } }
+    )
+    .take(3)
+    .map { it.key }
+
+@Composable
+private fun FrequentTimeButton(
+    selected: Boolean,
+    label: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    if (selected) {
+        Button(
+            onClick = onClick,
+            modifier = modifier,
+            contentPadding = PaddingValues(horizontal = 4.dp, vertical = 8.dp)
+        ) {
+            Text(label, maxLines = 1)
+        }
+    } else {
+        OutlinedButton(
+            onClick = onClick,
+            modifier = modifier,
+            contentPadding = PaddingValues(horizontal = 4.dp, vertical = 8.dp)
+        ) {
+            Text(label, maxLines = 1)
+        }
+    }
 }
 
 @Composable
@@ -536,7 +797,7 @@ private fun TimeButton(
     minutes: Int,
     onClick: () -> Unit
 ) {
-    OutlinedButton(onClick = onClick, modifier = modifier) {
+    TextButton(onClick = onClick, modifier = modifier) {
         Column {
             Text(label, style = MaterialTheme.typography.labelMedium)
             Text(
@@ -545,5 +806,87 @@ private fun TimeButton(
                 fontWeight = FontWeight.SemiBold
             )
         }
+    }
+}
+
+@Composable
+private fun DayTypeButton(
+    selected: Boolean,
+    onClick: () -> Unit,
+    label: String,
+    modifier: Modifier = Modifier
+) {
+    if (selected) {
+        Button(
+            onClick = onClick,
+            modifier = modifier,
+            contentPadding = PaddingValues(horizontal = 4.dp, vertical = 10.dp)
+        ) {
+            Text(label, maxLines = 1)
+        }
+    } else {
+        OutlinedButton(
+            onClick = onClick,
+            modifier = modifier,
+            contentPadding = PaddingValues(horizontal = 4.dp, vertical = 10.dp)
+        ) {
+            Text(label, maxLines = 1)
+        }
+    }
+}
+
+@Composable
+private fun BreakOptionButton(
+    selected: Boolean,
+    onClick: () -> Unit,
+    label: String,
+    modifier: Modifier = Modifier
+) {
+    if (selected) {
+        Button(
+            onClick = onClick,
+            modifier = modifier,
+            contentPadding = PaddingValues(horizontal = 2.dp, vertical = 8.dp)
+        ) {
+            Text(label, maxLines = 1)
+        }
+    } else {
+        OutlinedButton(
+            onClick = onClick,
+            modifier = modifier,
+            contentPadding = PaddingValues(horizontal = 2.dp, vertical = 8.dp)
+        ) {
+            Text(label, maxLines = 1)
+        }
+    }
+}
+
+@Composable
+private fun OptionalFieldsToggle(
+    expanded: Boolean,
+    onToggle: () -> Unit
+) {
+    TextButton(
+        onClick = onToggle,
+        modifier = Modifier.fillMaxWidth(),
+        contentPadding = PaddingValues(vertical = 10.dp)
+    ) {
+        Icon(
+            Icons.Outlined.Tune,
+            contentDescription = null
+        )
+        Text(
+            text = "Stawka i notatka",
+            modifier = Modifier.weight(1f).padding(horizontal = 8.dp)
+        )
+        Text(
+            text = if (expanded) "Zwi\u0144" else "Rozwi\u0144",
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Icon(
+            imageVector = if (expanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
+            contentDescription = null
+        )
     }
 }

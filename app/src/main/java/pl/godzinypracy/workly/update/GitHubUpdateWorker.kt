@@ -8,7 +8,6 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.net.Uri
 import android.os.Build
 import androidx.work.Constraints
 import androidx.work.ExistingPeriodicWorkPolicy
@@ -23,6 +22,7 @@ import org.json.JSONObject
 import pl.godzinypracy.workly.BuildConfig
 import pl.godzinypracy.workly.R
 import java.io.IOException
+import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
 import java.util.concurrent.TimeUnit
@@ -30,7 +30,10 @@ import java.util.concurrent.TimeUnit
 data class GitHubRelease(
     val tagName: String,
     val displayName: String,
-    val pageUrl: String
+    val pageUrl: String,
+    val apkName: String,
+    val apkDownloadUrl: String,
+    val sha256DownloadUrl: String
 )
 
 class UpdatePreferences(context: Context) {
@@ -79,7 +82,11 @@ class GitHubUpdateWorker(
                 isNewerVersion(release.tagName, BuildConfig.VERSION_NAME) &&
                 !preferences.wasAlreadyNotified(release.tagName)
             ) {
-                val notificationShown = UpdateNotification.show(applicationContext, release)
+                val apkFile = UpdatePackageDownloader.downloadBlocking(
+                    applicationContext,
+                    release
+                )
+                val notificationShown = UpdateNotification.show(applicationContext, release, apkFile)
                 if (notificationShown) preferences.markNotified(release.tagName)
             }
             Result.success()
@@ -108,12 +115,7 @@ class GitHubUpdateWorker(
                 HttpURLConnection.HTTP_OK -> {
                     val payload = connection.inputStream.bufferedReader().use { it.readText() }
                     val json = JSONObject(payload)
-                    val tagName = json.getString("tag_name")
-                    GitHubRelease(
-                        tagName = tagName,
-                        displayName = json.optString("name").takeIf { it.isNotBlank() } ?: tagName,
-                        pageUrl = json.getString("html_url")
-                    )
+                    parseGitHubRelease(json)
                 }
 
                 HttpURLConnection.HTTP_NOT_FOUND -> null
@@ -177,7 +179,11 @@ private object UpdateNotification {
     private const val CHANNEL_ID = "app-updates"
     private const val NOTIFICATION_ID = 6001
 
-    fun show(context: Context, release: GitHubRelease): Boolean {
+    fun show(
+        context: Context,
+        release: GitHubRelease,
+        apkFile: File
+    ): Boolean {
         if (
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) !=
@@ -198,23 +204,21 @@ private object UpdateNotification {
             }
         )
 
-        val releaseIntent = Intent(Intent.ACTION_VIEW, Uri.parse(release.pageUrl)).apply {
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        }
+        val installIntent = UpdatePackageInstaller.createInstallIntent(context, apkFile)
         val pendingIntent = PendingIntent.getActivity(
             context,
             release.tagName.hashCode(),
-            releaseIntent,
+            installIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
         val notification = Notification.Builder(context, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_stat_update)
             .setContentTitle("Nowa wersja Godziny Pracy")
-            .setContentText("Dost?pna jest wersja ${release.displayName}")
+            .setContentText("Pobrano wersj\u0119 ${release.displayName}")
             .setStyle(
                 Notification.BigTextStyle().bigText(
-                    "Dost?pna jest wersja ${release.displayName}. Dotknij, aby otworzy? wydanie na GitHub."
+                    "Pobrano wersj\u0119 ${release.displayName}. Dotknij, aby uruchomi\u0107 instalacj\u0119."
                 )
             )
             .setCategory(Notification.CATEGORY_STATUS)

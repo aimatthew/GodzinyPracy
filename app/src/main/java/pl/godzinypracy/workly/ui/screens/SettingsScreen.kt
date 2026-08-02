@@ -45,7 +45,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
-import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
@@ -58,6 +58,10 @@ import pl.godzinypracy.workly.sync.GoogleDriveSyncState
 import kotlinx.coroutines.launch
 import pl.godzinypracy.workly.update.AppUpdateChecker
 import pl.godzinypracy.workly.update.ManualUpdateCheckResult
+import pl.godzinypracy.workly.update.GitHubRelease
+import pl.godzinypracy.workly.update.UpdatePackageDownloader
+import pl.godzinypracy.workly.update.UpdatePackageInstaller
+
 
 @OptIn(ExperimentalComposeUiApi::class)
 @Composable
@@ -86,7 +90,9 @@ fun SettingsScreen(
     val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
     val updateCheckScope = rememberCoroutineScope()
-    val uriHandler = LocalUriHandler.current
+    val context = LocalContext.current
+    var isDownloadingUpdate by remember { mutableStateOf(false) }
+    var manualUpdateMessage by remember { mutableStateOf<String?>(null) }
     var manualUpdateResult by remember { mutableStateOf<ManualUpdateCheckResult?>(null) }
     var isCheckingForUpdate by remember { mutableStateOf(false) }
 
@@ -94,10 +100,34 @@ fun SettingsScreen(
         if (isCheckingForUpdate) return
         isCheckingForUpdate = true
         manualUpdateResult = null
+        manualUpdateMessage = null
         updateCheckScope.launch {
             manualUpdateResult = AppUpdateChecker.checkNow()
             isCheckingForUpdate = false
         }
+    }
+
+    fun downloadAndInstallUpdate(release: GitHubRelease) {
+        if (isDownloadingUpdate) return
+        isDownloadingUpdate = true
+        manualUpdateMessage = "Pobieranie i sprawdzanie APK..."
+        updateCheckScope.launch {
+            try {
+                val apkFile = UpdatePackageDownloader.download(context, release)
+                val installerOpened = UpdatePackageInstaller.launch(context, apkFile)
+                manualUpdateMessage = if (installerOpened) {
+                    "Instalator Androida zosta\u0142 uruchomiony."
+                } else {
+                    "Zezw\u00f3l aplikacji na instalowanie aktualizacji, wr\u00f3\u0107 tutaj i naci\u015bnij ponownie."
+                }
+            } catch (_: Exception) {
+                manualUpdateMessage =
+                    "Nie uda\u0142o si\u0119 pobra\u0107 lub zweryfikowa\u0107 aktualizacji."
+            } finally {
+                isDownloadingUpdate = false
+            }
+        }
+
     }
 
     fun saveHourlyRate() {
@@ -296,10 +326,22 @@ fun SettingsScreen(
                                     color = MaterialTheme.colorScheme.primary,
                                     fontWeight = FontWeight.SemiBold
                                 )
-                                TextButton(
-                                    onClick = { uriHandler.openUri(result.release.pageUrl) }
+                                Button(
+                                    onClick = { downloadAndInstallUpdate(result.release) },
+                                    enabled = !isDownloadingUpdate,
+                                    modifier = Modifier.fillMaxWidth()
                                 ) {
-                                    Text("Otw\u00f3rz wydanie")
+                                    Text(
+                                        if (isDownloadingUpdate) {
+                                            "Pobieranie APK..."
+                                        } else {
+                                            "Pobierz i zainstaluj"
+                                        }
+                                    )
+                                }
+                                manualUpdateMessage?.let { message ->
+                                    Spacer(Modifier.height(6.dp))
+                                    Text(message, style = MaterialTheme.typography.bodySmall)
                                 }
                             }
                         }
